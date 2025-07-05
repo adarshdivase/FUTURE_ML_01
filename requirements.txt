@@ -2,4 +2,4 @@ streamstreamlit
 pandas
 plotly
 scikit-learn
-prophet
+fbprophet
