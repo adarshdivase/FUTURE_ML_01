@@ -7,8 +7,12 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 from sklearn.cluster import KMeans
-from prophet import Prophet
+from statsmodels.tsa.arima.model import ARIMA
 import logging
+import warnings
+
+# Suppress warnings from statsmodels
+warnings.filterwarnings("ignore")
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -69,22 +73,24 @@ def perform_rfm_analysis(df: pd.DataFrame) -> pd.DataFrame:
     return rfm
 
 def forecast_sales(df: pd.DataFrame, periods: int = 30) -> pd.DataFrame:
-    """Generate sales forecast using Prophet."""
-    if df.empty or len(df) < 2:
-        return pd.DataFrame(columns=['ds', 'yhat', 'yhat_lower', 'yhat_upper'])
+    """Generate sales forecast using an ARIMA model from statsmodels."""
+    if df.empty or len(df) < 10: # ARIMA needs more data points
+        return pd.DataFrame(columns=['ds', 'yhat'])
 
-    sales_data = df.groupby(df['purchase_date'].dt.date)['amount'].sum().reset_index()
-    sales_data.columns = ['ds', 'y']
-
-    model = Prophet(
-        yearly_seasonality=False, weekly_seasonality=True, daily_seasonality=False,
-        changepoint_prior_scale=0.05, seasonality_prior_scale=10.0
-    )
-    model.fit(sales_data)
+    sales_data = df.set_index('purchase_date').resample('D')['amount'].sum().fillna(0)
     
-    future = model.make_future_dataframe(periods=periods)
-    forecast = model.predict(future)
-    return forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']]
+    # Fit ARIMA model
+    model = ARIMA(sales_data, order=(5,1,0)) # (p,d,q) order
+    model_fit = model.fit()
+    
+    # Make forecast
+    forecast = model_fit.get_forecast(steps=periods)
+    forecast_df = forecast.summary_frame()
+    
+    forecast_df.reset_index(inplace=True)
+    forecast_df.columns = ['ds', 'yhat', 'se', 'yhat_lower', 'yhat_upper']
+    
+    return forecast_df[['ds', 'yhat', 'yhat_lower', 'yhat_upper']]
 
 
 # --- Main App ---
@@ -97,7 +103,6 @@ if df_full is not None:
     # --- Sidebar Filters ---
     st.sidebar.header("Dashboard Filters")
     
-    # Date Range Filter
     min_date = df_full['purchase_date'].min().date()
     max_date = df_full['purchase_date'].max().date()
     start_date, end_date = st.sidebar.date_input(
@@ -107,7 +112,6 @@ if df_full is not None:
         max_value=max_date
     )
 
-    # Product Category Filter
     all_categories = df_full['product_category'].unique()
     selected_categories = st.sidebar.multiselect(
         "Select Product Categories",
@@ -115,7 +119,6 @@ if df_full is not None:
         default=all_categories
     )
 
-    # Filter the DataFrame based on selections
     df_filtered = df_full[
         (df_full['purchase_date'].dt.date >= start_date) &
         (df_full['purchase_date'].dt.date <= end_date) &
@@ -125,11 +128,9 @@ if df_full is not None:
     if df_filtered.empty:
         st.warning("No data available for the selected filters. Please adjust your selection.")
     else:
-        # --- Run Analyses on Filtered Data ---
         rfm_data = perform_rfm_analysis(df_filtered)
         forecast_data = forecast_sales(df_filtered, periods=90)
 
-        # --- Display KPIs ---
         total_revenue = df_filtered['amount'].sum()
         total_orders = df_filtered['order_id'].nunique()
         avg_order_value = total_revenue / total_orders if total_orders > 0 else 0
@@ -143,7 +144,6 @@ if df_full is not None:
 
         st.markdown("---")
 
-        # --- Create Dashboard Visualizations ---
         fig = make_subplots(
             rows=3, cols=2,
             subplot_titles=(
@@ -154,37 +154,29 @@ if df_full is not None:
             vertical_spacing=0.15
         )
 
-        # Daily Revenue
         daily_revenue = df_filtered.groupby(df_filtered['purchase_date'].dt.date)['amount'].sum().reset_index()
         fig.add_trace(go.Scatter(x=daily_revenue['purchase_date'], y=daily_revenue['amount'], mode='lines', name='Daily Revenue'), row=1, col=1)
 
-        # Customer Segments
         segment_data = rfm_data['segment'].value_counts()
         fig.add_trace(go.Pie(labels=segment_data.index, values=segment_data.values, name='Segments'), row=1, col=2)
 
-        # Top Product Categories
         top_categories = df_filtered.groupby('product_category')['amount'].sum().nlargest(5).reset_index()
         fig.add_trace(go.Bar(x=top_categories['product_category'], y=top_categories['amount'], name='Revenue'), row=2, col=1)
 
-        # Sales Forecast
         fig.add_trace(go.Scatter(x=forecast_data['ds'], y=forecast_data['yhat'], mode='lines', name='Forecast'), row=2, col=2)
         fig.add_trace(go.Scatter(x=forecast_data['ds'], y=forecast_data['yhat_upper'], fill='tonexty', mode='none', name='Upper Bound', line_color='lightgrey'), row=2, col=2)
         fig.add_trace(go.Scatter(x=forecast_data['ds'], y=forecast_data['yhat_lower'], fill='tonexty', mode='none', name='Lower Bound', line_color='lightgrey'), row=2, col=2)
 
-        # Sales by Day of Week
         df_filtered['day_of_week'] = df_filtered['purchase_date'].dt.day_name()
         day_of_week_data = df_filtered.groupby('day_of_week')['amount'].sum().reindex(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']).reset_index()
         fig.add_trace(go.Bar(x=day_of_week_data['day_of_week'], y=day_of_week_data['amount'], name='Revenue by Day'), row=3, col=1)
 
-        # Gender Distribution
         gender_data = df_filtered['gender'].value_counts()
         fig.add_trace(go.Pie(labels=gender_data.index, values=gender_data.values, name='Gender'), row=3, col=2)
         
         fig.update_layout(height=1000, showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- Display Data Table ---
         st.markdown("---")
         st.subheader("Filtered Sales Data")
         st.dataframe(df_filtered.head(100))
-
