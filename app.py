@@ -75,7 +75,7 @@ def perform_rfm_analysis(df: pd.DataFrame) -> pd.DataFrame:
 def forecast_sales(df: pd.DataFrame, periods: int = 30) -> pd.DataFrame:
     """Generate sales forecast using an ARIMA model from statsmodels."""
     if df.empty or len(df) < 10: # ARIMA needs more data points
-        return pd.DataFrame(columns=['ds', 'yhat'])
+        return pd.DataFrame(columns=['ds', 'yhat', 'yhat_lower', 'yhat_upper'])
 
     sales_data = df.set_index('purchase_date').resample('D')['amount'].sum().fillna(0)
     
@@ -144,6 +144,8 @@ if df_full is not None:
 
         st.markdown("---")
 
+        # --- THIS IS THE CORRECTED PART ---
+        # The 'specs' parameter now correctly defines which subplots are pie charts
         fig = make_subplots(
             rows=3, cols=2,
             subplot_titles=(
@@ -151,26 +153,37 @@ if df_full is not None:
                 'Top Product Categories by Revenue', 'Sales Forecast (90 Days)',
                 'Sales by Day of Week', 'Gender Distribution'
             ),
-            vertical_spacing=0.15
+            vertical_spacing=0.15,
+            specs=[
+                [{"type": "xy"}, {"type": "pie"}],
+                [{"type": "xy"}, {"type": "xy"}],
+                [{"type": "xy"}, {"type": "pie"}]
+            ]
         )
 
+        # Daily Revenue
         daily_revenue = df_filtered.groupby(df_filtered['purchase_date'].dt.date)['amount'].sum().reset_index()
         fig.add_trace(go.Scatter(x=daily_revenue['purchase_date'], y=daily_revenue['amount'], mode='lines', name='Daily Revenue'), row=1, col=1)
 
+        # Customer Segments
         segment_data = rfm_data['segment'].value_counts()
         fig.add_trace(go.Pie(labels=segment_data.index, values=segment_data.values, name='Segments'), row=1, col=2)
 
+        # Top Product Categories
         top_categories = df_filtered.groupby('product_category')['amount'].sum().nlargest(5).reset_index()
         fig.add_trace(go.Bar(x=top_categories['product_category'], y=top_categories['amount'], name='Revenue'), row=2, col=1)
 
+        # Sales Forecast
         fig.add_trace(go.Scatter(x=forecast_data['ds'], y=forecast_data['yhat'], mode='lines', name='Forecast'), row=2, col=2)
         fig.add_trace(go.Scatter(x=forecast_data['ds'], y=forecast_data['yhat_upper'], fill='tonexty', mode='none', name='Upper Bound', line_color='lightgrey'), row=2, col=2)
         fig.add_trace(go.Scatter(x=forecast_data['ds'], y=forecast_data['yhat_lower'], fill='tonexty', mode='none', name='Lower Bound', line_color='lightgrey'), row=2, col=2)
 
+        # Sales by Day of Week
         df_filtered['day_of_week'] = df_filtered['purchase_date'].dt.day_name()
         day_of_week_data = df_filtered.groupby('day_of_week')['amount'].sum().reindex(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']).reset_index()
         fig.add_trace(go.Bar(x=day_of_week_data['day_of_week'], y=day_of_week_data['amount'], name='Revenue by Day'), row=3, col=1)
 
+        # Gender Distribution
         gender_data = df_filtered['gender'].value_counts()
         fig.add_trace(go.Pie(labels=gender_data.index, values=gender_data.values, name='Gender'), row=3, col=2)
         
